@@ -13,17 +13,29 @@ CORS(app, resources={r"/*": {"origins": "*"}})  # Allow all origins for local te
 
 # ✅ Secure authentication using environment variable
 PROJECT_ID = "automatic-spotify-scraper"
-SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "automatic-spotify-scraper.json")
 
-# Authenticate BigQuery client
-try:
-    credentials = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE)
-    client = bigquery.Client(credentials=credentials, project=PROJECT_ID)
-    print("✅ BigQuery authentication successful!")
-except Exception as e:
-    print(f"❌ Failed to authenticate with BigQuery: {e}")
+# Load Google credentials
+credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+
+if credentials_json:
+    try:
+        credentials_dict = json.loads(credentials_json)
+        temp_credentials_path = "/tmp/gcloud-credentials.json"
+        with open(temp_credentials_path, "w") as f:
+            json.dump(credentials_dict, f)
+
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_credentials_path
+        credentials = service_account.Credentials.from_service_account_file(temp_credentials_path)
+        client = bigquery.Client(credentials=credentials)
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON Decode Error: {e}")
+        credentials = None
+        client = None
+else:
+    print("❌ No credentials found in environment variable!")
     credentials = None
     client = None
+
 
 # ✅ List of datasets
 DATASET_LIST = [
