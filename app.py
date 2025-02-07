@@ -2,6 +2,7 @@ import os
 import json
 import pandas as pd
 import concurrent.futures  # Multi-threading
+import time
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google.cloud import bigquery
@@ -36,7 +37,6 @@ else:
     credentials = None
     client = None
 
-
 # ✅ List of datasets
 DATASET_LIST = [
     "keywords_ranking_data_sheet1",
@@ -48,23 +48,35 @@ DATASET_LIST = [
 @app.route('/get_all_tables', methods=['GET'])
 def get_all_tables():
     """
-    Fetches all unique table names from the datasets.
+    Fetches all unique table names from the datasets in a balanced way.
     Example call: /get_all_tables
     """
     try:
         all_tables = set()
         errors = {}
 
-        for dataset in DATASET_LIST:
+        def fetch_dataset_tables(dataset):
+            """Fetch table names for a single dataset"""
             try:
-                print(f"🔍 Querying tables from `{dataset}`...")
                 query = f"SELECT table_name FROM `{PROJECT_ID}.{dataset}.INFORMATION_SCHEMA.TABLES`"
                 query_job = client.query(query)
-                table_names = [row.table_name for row in query_job.result()]
-                all_tables.update(table_names)
+                return [row.table_name for row in query_job.result()]
             except Exception as e:
                 errors[dataset] = str(e)
                 print(f"⚠️ Error fetching tables from `{dataset}`: {e}")
+                return []
+
+        # ✅ Use a small thread pool to avoid excessive queries
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future_to_dataset = {executor.submit(fetch_dataset_tables, dataset): dataset for dataset in DATASET_LIST}
+            
+            for future in concurrent.futures.as_completed(future_to_dataset):
+                dataset_name = future_to_dataset[future]
+                try:
+                    all_tables.update(future.result())
+                except Exception as e:
+                    print(f"⚠️ Error processing `{dataset_name}`: {e}")
+                    errors[dataset_name] = str(e)
 
         if errors:
             return jsonify({"status": "error", "message": "Some datasets failed", "errors": errors})
@@ -74,21 +86,20 @@ def get_all_tables():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
-def fetch_table_data_parallel(dataset_name, table_name):
-    """Fetches table data from BigQuery using parallel processing."""
+def fetch_table_data(dataset_name, table_name):
+    """Fetches table data from BigQuery while limiting excessive queries."""
     try:
         print(f"📥 Fetching `{table_name}` from `{dataset_name}`...")
 
-        # ✅ Fetch only required columns (replace * with specific columns if known)
+        # ✅ Optimize query with pagination & caching
         query = f"""
             SELECT * FROM `{PROJECT_ID}.{dataset_name}.{table_name}`
-            LIMIT 1000
+            LIMIT 500  -- ✅ Reduced limit for faster queries
         """
-        job_config = bigquery.QueryJobConfig(use_query_cache=True)  # ✅ Enable Query Caching
+        job_config = bigquery.QueryJobConfig(use_query_cache=True)
         query_job = client.query(query, job_config=job_config)
         results = query_job.result()
 
-        # ✅ Convert to dictionary format
         return {dataset_name: [dict(row) for row in results]}
 
     except Exception as e:
@@ -98,7 +109,7 @@ def fetch_table_data_parallel(dataset_name, table_name):
 @app.route('/get_table_data', methods=['GET'])
 def get_table_data():
     """
-    Fetches a table from all 4 datasets in parallel.
+    Fetches a table from all datasets in parallel but with controlled parallelism.
     Example call: /get_table_data?table_name=some_table
     """
     try:
@@ -106,14 +117,14 @@ def get_table_data():
         if not table_name:
             return jsonify({"status": "error", "message": "Missing table_name parameter"})
 
-        print(f"🚀 Fetching `{table_name}` from all datasets in parallel...")
+        print(f"🚀 Fetching `{table_name}` from all datasets with controlled concurrency...")
 
         dataset_tables = {}
 
-        # ✅ Fetch from all 4 datasets in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        # ✅ Reduce parallel requests to 2 at a time
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_to_dataset = {
-                executor.submit(fetch_table_data_parallel, dataset, table_name): dataset
+                executor.submit(fetch_table_data, dataset, table_name): dataset
                 for dataset in DATASET_LIST
             }
 
@@ -130,5 +141,16 @@ def get_table_data():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
+# ✅ Add logging to monitor slow queries
+@app.before_request
+def start_timer():
+    request.start_time = time.time()
+
+@app.after_request
+def log_request(response):
+    duration = time.time() - request.start_time
+    print(f"⏳ API Request: {request.path} took {duration:.2f}s")
+    return response
+
 if __name__ == '__main__':
-    app.run(debug=False, host="0.0.0.0", port=5000, threaded=True)  # Multi-threading enabled
+    app.run(debug=False, host="0.0.0.0", port=5000, threaded=True)
