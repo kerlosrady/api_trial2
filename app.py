@@ -33,6 +33,35 @@ DATASET_LIST = [
     "keywords_ranking_data_sheet4"
 ]
 
+@app.route('/get_all_tables', methods=['GET'])
+def get_all_tables():
+    """
+    Fetches all unique table names from the datasets.
+    Example call: /get_all_tables
+    """
+    try:
+        all_tables = set()
+        errors = {}
+
+        for dataset in DATASET_LIST:
+            try:
+                print(f"🔍 Querying tables from `{dataset}`...")
+                query = f"SELECT table_name FROM `{PROJECT_ID}.{dataset}.INFORMATION_SCHEMA.TABLES`"
+                query_job = client.query(query)
+                table_names = [row.table_name for row in query_job.result()]
+                all_tables.update(table_names)
+            except Exception as e:
+                errors[dataset] = str(e)
+                print(f"⚠️ Error fetching tables from `{dataset}`: {e}")
+
+        if errors:
+            return jsonify({"status": "error", "message": "Some datasets failed", "errors": errors})
+
+        return jsonify({"status": "success", "tables": list(all_tables)})
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
 def fetch_table_data_parallel(dataset_name, table_name):
     """Fetches table data from BigQuery using parallel processing."""
     try:
@@ -41,7 +70,6 @@ def fetch_table_data_parallel(dataset_name, table_name):
         # ✅ Fetch only required columns (replace * with specific columns if known)
         query = f"""
             SELECT * FROM `{PROJECT_ID}.{dataset_name}.{table_name}`
-            WHERE TRUE  -- Dummy condition for query optimization
             LIMIT 1000
         """
         job_config = bigquery.QueryJobConfig(use_query_cache=True)  # ✅ Enable Query Caching
@@ -70,7 +98,7 @@ def get_table_data():
 
         dataset_tables = {}
 
-        # ✅ Step 1: Fetch from all 4 datasets in parallel
+        # ✅ Fetch from all 4 datasets in parallel
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             future_to_dataset = {
                 executor.submit(fetch_table_data_parallel, dataset, table_name): dataset
