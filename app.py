@@ -31,7 +31,6 @@ DATASET_LIST = [
     "keywords_ranking_data_sheet3",
     "keywords_ranking_data_sheet4"
 ]
-
 @app.route('/get_all_tables', methods=['GET'])
 def get_all_tables():
     """
@@ -40,20 +39,33 @@ def get_all_tables():
     """
     try:
         all_tables = set()
+        errors = {}
 
         for dataset in DATASET_LIST:
             try:
+                print(f"🔍 Querying tables from `{dataset}`...")  # Debugging print
+
                 query = f"SELECT table_name FROM `{PROJECT_ID}.{dataset}.INFORMATION_SCHEMA.TABLES`"
                 query_job = client.query(query)
                 table_names = [row.table_name for row in query_job.result()]
+
+                print(f"✅ Found {len(table_names)} tables in `{dataset}`: {table_names}")  # Debugging print
+
                 all_tables.update(table_names)  # Add unique table names
+
             except Exception as e:
+                errors[dataset] = str(e)
                 print(f"⚠️ Error fetching tables from `{dataset}`: {e}")
+
+        if errors:
+            return jsonify({"status": "error", "message": "Errors occurred while fetching tables", "errors": errors})
 
         return jsonify({"status": "success", "tables": list(all_tables)})
 
     except Exception as e:
+        print(f"❌ API Error: {e}")
         return jsonify({"status": "error", "message": str(e)})
+
 
 
 @app.route('/get_table_data', methods=['GET'])
