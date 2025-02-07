@@ -59,10 +59,8 @@ def stream_table_data(dataset_name, table_name):
     except Exception as e:
         print(f"⚠️ Error streaming `{dataset_name}.{table_name}`: {e}")
         return jsonify({"status": "error", "message": str(e)})
-
 @app.route('/get_all_tables_data', methods=['GET'])
 def get_all_tables_data():
-    """Streams entire dataset without loading everything in memory."""
     try:
         dataset_list = [
             "keywords_ranking_data_sheet1",
@@ -71,45 +69,28 @@ def get_all_tables_data():
             "keywords_ranking_data_sheet4"
         ]
 
-        def generate():
-            yield '{"status": "success", "data": {'  # Open JSON object
-            first_dataset = True
+        full_response = {"status": "success", "data": {}}
 
-            for dataset_name in dataset_list:
-                if not first_dataset:
-                    yield ','  # Add comma between datasets
-                yield f'"{dataset_name}": {{'  # Start dataset object
-                
-                query = f"SELECT table_name FROM `{PROJECT_ID}.{dataset_name}.INFORMATION_SCHEMA.TABLES`"
-                query_job = client.query(query)
-                table_names = [row.table_name for row in query_job.result()]
+        for dataset_name in dataset_list:
+            full_response["data"][dataset_name] = {}
 
-                first_table = True
-                for table_name in table_names:
-                    if not first_table:
-                        yield ','  # Add comma between tables
-                    yield f'"{table_name}": ['  # Start table array
-                    
-                    # Stream table data row-by-row
-                    first_row = True
-                    for row in client.query(f"SELECT * FROM `{PROJECT_ID}.{dataset_name}.{table_name}` LIMIT 5000").result():
-                        if not first_row:
-                            yield ','
-                        yield json.dumps(dict(row))  # Convert row to JSON
-                        first_row = False
+            query = f"SELECT table_name FROM `{PROJECT_ID}.{dataset_name}.INFORMATION_SCHEMA.TABLES`"
+            query_job = client.query(query)
+            table_names = [row.table_name for row in query_job.result()]
 
-                    yield ']'  # Close table array
-                    first_table = False
+            for table_name in table_names:
+                query_data = f"SELECT * FROM `{PROJECT_ID}.{dataset_name}.{table_name}` LIMIT 200"
+                results = client.query(query_data).result()
+                table_data = [dict(row) for row in results]
+                full_response["data"][dataset_name][table_name] = table_data
 
-                yield '}'  # Close dataset object
-                first_dataset = False
+        json_response = json.dumps(full_response, indent=2)
+        print(f"✅ API Response Size: {len(json_response)} characters")  # Debug print
 
-            yield '}}'  # Close JSON response
-
-        return Response(generate(), content_type="application/json")
+        return Response(json_response, content_type="application/json")
 
     except Exception as e:
-        print(f"⚠️ Error in streaming API: {e}")
+        print(f"❌ API Error: {e}")
         return jsonify({"status": "error", "message": str(e)})
 
 if __name__ == '__main__':
