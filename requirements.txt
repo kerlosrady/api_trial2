@@ -59,7 +59,6 @@ pyasn1_modules==0.4.0
 pycountry==23.12.11
 pycparser==2.21
 pyinstaller @ https://github.com/pyinstaller/pyinstaller/archive/develop.zip
-pyinstaller-hooks-contrib==2023.1
 pyparsing==3.0.9
 PySocks==1.7.1
 python-dateutil==2.8.2
@@ -88,4 +87,3 @@ Flask==3.1.0
 flask-cors==5.0.0
 gunicorn==21.2.0
 google-cloud-bigquery==3.29.0
-
