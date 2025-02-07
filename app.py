@@ -1,97 +1,8 @@
-# import os
-# import json
-# import pandas as pd
-# from flask import Flask, request, jsonify
-# from flask_cors import CORS
-# from google.cloud import bigquery
-# from google.oauth2 import service_account
-#
-# # Initialize Flask app
-# app = Flask(__name__)
-# CORS(app, resources={r"/*": {"origins": "*"}})  # Allow all origins for local testing
-#
-# # ✅ Secure authentication using environment variable
-# PROJECT_ID = "automatic-spotify-scraper"  # Ensure this is the correct project
-# SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "automatic-spotify-scraper.json")
-#
-# # Authenticate BigQuery client
-# try:
-#     credentials = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE)
-#     client = bigquery.Client(credentials=credentials, project=PROJECT_ID)
-#     print("✅ BigQuery authentication successful!")
-# except Exception as e:
-#     print(f"❌ Failed to authenticate with BigQuery: {e}")
-#     credentials = None
-#     client = None
-#
-#
-# @app.route('/get_all_tables_data', methods=['GET'])
-# def get_all_tables_data():
-#     try:
-#         dataset_list = [
-#             "keywords_ranking_data_sheet1",
-#             # "keywords_ranking_data_sheet2",
-#             # "keywords_ranking_data_sheet3",
-#             # "keywords_ranking_data_sheet4"
-#         ]
-#
-#         dataset_tables = {}
-#
-#         # ✅ Step 1: Fetch all table names from each dataset's `INFORMATION_SCHEMA`
-#         all_tables = []
-#         for dataset in dataset_list:
-#             query = f"""
-#                 SELECT '{dataset}' AS dataset_name, table_name
-#                 FROM `{PROJECT_ID}.{dataset}.INFORMATION_SCHEMA.TABLES`
-#             """
-#
-#             query_job = client.query(query)
-#             results = query_job.result()
-#             for row in results:
-#                 all_tables.append((row.dataset_name, row.table_name))
-#
-#         if not all_tables:
-#             return jsonify({"status": "error", "message": "No tables found in datasets."})
-#
-#         # ✅ Step 2: Iterate through all datasets and tables, fetch data
-#         for dataset_name, table_name in all_tables:
-#             dataset_key = dataset_name.replace('keywords_ranking_data_sheet', '')
-#
-#             if dataset_key not in dataset_tables:
-#                 dataset_tables[dataset_key] = {}
-#
-#             print(f"📥 Fetching data from {dataset_name}.{table_name}")
-#
-#             # ✅ Fetch data (LIMIT to prevent memory overload)
-#             table_query = f"SELECT * FROM `{PROJECT_ID}.{dataset_name}.{table_name}` LIMIT 10000"
-#
-#             try:
-#                 table_job = client.query(table_query)
-#                 table_results = table_job.result()
-#                 data = [dict(record) for record in table_results]
-#                 dataset_tables[dataset_key][table_name] = data
-#
-#             except Exception as e:
-#                 print(f"⚠️ Error fetching {dataset_name}.{table_name}: {e}")
-#                 dataset_tables[dataset_key][table_name] = {"error": str(e)}
-#
-#         return jsonify({"status": "success", "data": dataset_tables})
-#
-#     except Exception as e:
-#         return jsonify({"status": "error", "message": str(e)})
-#
-#
-# if __name__ == '__main__':
-#     app.run(debug=False, host="0.0.0.0", port=5000)  # Production-ready setup
-
-
-
 import os
 import json
 import pandas as pd
-import concurrent.futures  # Multi-threading
-import multiprocessing  # Multi-processing
-from flask import Flask, request, jsonify
+import concurrent.futures
+from flask import Flask, Response, request, jsonify
 from flask_cors import CORS
 from google.cloud import bigquery
 from google.oauth2 import service_account
@@ -101,12 +12,11 @@ app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})  # Allow all origins for local testing
 
 # ✅ Secure authentication using environment variable
-PROJECT_ID = "automatic-spotify-scraper"  # Ensure this is the correct project
+PROJECT_ID = "automatic-spotify-scraper"
 SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "automatic-spotify-scraper.json")
 
 # Load Google credentials
 credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-
 if credentials_json:
     try:
         credentials_dict = json.loads(credentials_json)
@@ -126,29 +36,33 @@ else:
     credentials = None
     client = None
 
-
-def fetch_table_data(dataset_name, table_name):
-    """Fetches data from a given table efficiently using multiprocessing."""
+def stream_table_data(dataset_name, table_name):
+    """Streams BigQuery data row-by-row to reduce memory usage."""
     try:
-        print(f"📥 Fetching data from `{PROJECT_ID}.{dataset_name}.{table_name}`...")
+        print(f"📥 Streaming data from `{PROJECT_ID}.{dataset_name}.{table_name}`...")
 
-        # ✅ Fetch only needed columns (replace `*` with required columns if possible)
-        query = f"SELECT * FROM `{PROJECT_ID}.{dataset_name}.{table_name}` LIMIT 10000"
+        query = f"SELECT * FROM `{PROJECT_ID}.{dataset_name}.{table_name}` LIMIT 5000"  # Limit to prevent overload
         query_job = client.query(query)
-        results = query_job.result()
 
-        data = [dict(row) for row in results]
-        print(f"✅ Retrieved {len(data)} rows from {dataset_name}.{table_name}")
+        def generate():
+            yield '{"status": "success", "data": ['  # Open JSON array
+            first_row = True
+            for row in query_job.result():
+                if not first_row:
+                    yield ','
+                yield json.dumps(dict(row))  # Convert row to JSON
+                first_row = False
+            yield ']}'  # Close JSON array
 
-        return {table_name: data}
+        return Response(generate(), content_type="application/json")
 
     except Exception as e:
-        print(f"⚠️ Error fetching `{PROJECT_ID}.{dataset_name}.{table_name}`: {e}")
-        return {table_name: {"error": str(e)}}
-
+        print(f"⚠️ Error streaming `{dataset_name}.{table_name}`: {e}")
+        return jsonify({"status": "error", "message": str(e)})
 
 @app.route('/get_all_tables_data', methods=['GET'])
 def get_all_tables_data():
+    """Streams entire dataset without loading everything in memory."""
     try:
         dataset_list = [
             "keywords_ranking_data_sheet1",
@@ -157,48 +71,45 @@ def get_all_tables_data():
             "keywords_ranking_data_sheet4"
         ]
 
-        dataset_tables = {}
+        def generate():
+            yield '{"status": "success", "data": {'  # Open JSON object
+            first_dataset = True
 
-        # ✅ Step 1: Fetch all table names from each dataset's `INFORMATION_SCHEMA`
-        all_tables = []
-        for dataset in dataset_list:
-            query = f"""
-                SELECT '{dataset}' AS dataset_name, table_name
-                FROM `{PROJECT_ID}.{dataset}.INFORMATION_SCHEMA.TABLES`
-            """
+            for dataset_name in dataset_list:
+                if not first_dataset:
+                    yield ','  # Add comma between datasets
+                yield f'"{dataset_name}": {{'  # Start dataset object
+                
+                query = f"SELECT table_name FROM `{PROJECT_ID}.{dataset_name}.INFORMATION_SCHEMA.TABLES`"
+                query_job = client.query(query)
+                table_names = [row.table_name for row in query_job.result()]
 
-            query_job = client.query(query)
-            results = query_job.result()
-            for row in results:
-                all_tables.append((row.dataset_name, row.table_name))
+                first_table = True
+                for table_name in table_names:
+                    if not first_table:
+                        yield ','  # Add comma between tables
+                    yield f'"{table_name}": ['  # Start table array
+                    
+                    # Stream table data row-by-row
+                    first_row = True
+                    for row in client.query(f"SELECT * FROM `{PROJECT_ID}.{dataset_name}.{table_name}` LIMIT 5000").result():
+                        if not first_row:
+                            yield ','
+                        yield json.dumps(dict(row))  # Convert row to JSON
+                        first_row = False
 
-        if not all_tables:
-            return jsonify({"status": "error", "message": "No tables found in datasets."})
+                    yield ']'  # Close table array
+                    first_table = False
 
-        # ✅ Step 2: Fetch data in Parallel using Multi-Threading
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_table = {
-                executor.submit(fetch_table_data, dataset_name, table_name): (dataset_name, table_name)
-                for dataset_name, table_name in all_tables
-            }
+                yield '}'  # Close dataset object
+                first_dataset = False
 
-            for future in concurrent.futures.as_completed(future_to_table):
-                dataset_name, table_name = future_to_table[future]
-                dataset_key = dataset_name.replace('keywords_ranking_data_sheet', '')
+            yield '}}'  # Close JSON response
 
-                if dataset_key not in dataset_tables:
-                    dataset_tables[dataset_key] = {}
-
-                try:
-                    table_data = future.result()
-                    dataset_tables[dataset_key].update(table_data)
-                except Exception as e:
-                    print(f"⚠️ Error processing `{dataset_name}.{table_name}`: {e}")
-                    dataset_tables[dataset_key][table_name] = {"error": str(e)}
-
-        return jsonify({"status": "success", "data": dataset_tables})
+        return Response(generate(), content_type="application/json")
 
     except Exception as e:
+        print(f"⚠️ Error in streaming API: {e}")
         return jsonify({"status": "error", "message": str(e)})
 
 if __name__ == '__main__':
